@@ -52,6 +52,13 @@ PREDEFINITI: dict = {
         # Se true, i suggerimenti automatici partono solo dalle domande degli altri.
         "solo_interlocutore": False,
     },
+    "schermo": {
+        # Schermo da catturare con il bottone 📸: 1 = principale (quello con la barra dei menu).
+        "numero": 1,
+        # Lato lungo massimo dell'immagine mandata a Claude, in pixel, e qualità JPEG.
+        "lato_max": 1568,
+        "qualita": 80,
+    },
 }
 
 

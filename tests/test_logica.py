@@ -1,13 +1,15 @@
 """Test di segmentazione, trigger, prompt e motore (senza audio vero né Claude vero)."""
+import base64
 import threading
 import time
 from pathlib import Path
 
 import numpy as np
 
-from copilota.assistente import Assistente
+from copilota.assistente import Assistente, contenuto, costruisci_messaggio
 from copilota.config import carica
 from copilota.motore import Eventi, Motore, modelli
+from copilota.schermo import Immagine, dimensioni_png, prepara
 from copilota.segmentatore import Segmentatore
 from copilota.trascrittore import _segmento_valido, ricampiona
 from copilota.trigger import sembra_richiesta
@@ -15,6 +17,9 @@ from copilota.trigger import sembra_richiesta
 RADICE = Path(__file__).resolve().parent.parent
 SR = 48000
 _rng = np.random.default_rng(0)
+PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
 
 
 def _rumore(s):
@@ -119,6 +124,9 @@ class _Registro(Eventi):
     def errore(self, t):
         self.log.append(("err", t))
 
+    def schermo(self, d):
+        self.log.append(("schermo", len(d)))
+
 
 def test_motore_con_api_finta():
     cfg = carica(RADICE / "config.toml")
@@ -147,3 +155,37 @@ def test_motore_con_api_finta():
     time.sleep(0.8)
     msg2 = client.chiamate[1]["messages"][0]["content"]
     assert "Suggerimenti già mostrati" in msg2 and "L'utente ti chiede" in msg2
+
+
+def test_messaggio_con_screenshot():
+    msg = costruisci_messaggio("[00:01] Interlocutore: guarda qui", schermo=True)
+    assert "screenshot" in msg and "ti mostra il suo schermo" in msg
+    msg2 = costruisci_messaggio("", domanda_utente="perché fallisce?", schermo=True)
+    assert "screenshot" in msg2 and "perché fallisce?" in msg2 and "ti mostra" not in msg2
+    assert "screenshot" not in costruisci_messaggio("x")
+    c = contenuto("ciao", Immagine(b"abc", "image/jpeg"))
+    assert c[0] == {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "YWJj"}}
+    assert c[1] == {"type": "text", "text": "ciao"} and contenuto("ciao") == "ciao"
+
+
+def test_prepara_screenshot():
+    assert dimensioni_png(PNG_1X1) == (1, 1) and dimensioni_png(b"non un png") is None
+    img = prepara(PNG_1X1)  # su macOS diventa JPEG con sips, altrove resta PNG
+    assert img.dati and img.tipo in ("image/jpeg", "image/png")
+
+
+def test_motore_con_screenshot():
+    cfg = carica(RADICE / "config.toml")
+    client = _ClientFinto()
+    ev = _Registro()
+    m = Motore(cfg, ev, assistente=Assistente("claude-sonnet-5-5", 700, client=client), trascrittore=object())
+    m.nuova_frase("Interlocutore", "Vedi questo errore nella console?")
+    m.chiedi_su_schermo(PNG_1X1, "cos'è questo errore?")
+    time.sleep(0.8)
+    content = client.chiamate[-1]["messages"][0]["content"]
+    assert isinstance(content, list) and content[0]["type"] == "image"
+    assert "cos'è questo errore?" in content[1]["text"] and "screenshot" in content[1]["text"]
+    assert "errore nella console" in content[1]["text"]  # la trascrizione c'è sempre
+    assert any(e[0] == "schermo" for e in ev.log)
+    assert any(e[0] == "inizio" and e[1].startswith("📸 Domanda") for e in ev.log), ev.log
+    assert m._pendente is None  # la richiesta con lo schermo annulla l'automatico in attesa

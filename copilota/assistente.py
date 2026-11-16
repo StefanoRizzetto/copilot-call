@@ -27,19 +27,37 @@ def costruisci_messaggio(
     focus: str | None = None,
     domanda_utente: str | None = None,
     precedenti: list[str] | None = None,
+    schermo: bool = False,
 ) -> str:
     parti = [f"Trascrizione degli ultimi minuti:\n<trascrizione>\n{trascrizione or '(ancora vuota)'}\n</trascrizione>"]
     if precedenti:
         elenco = "\n".join(f"- {p.splitlines()[0][:200]}" for p in precedenti if p.strip())
         if elenco:
             parti.append(f"Suggerimenti già mostrati di recente (non ripeterli; al massimo approfondisci):\n{elenco}")
+    if schermo:
+        parti.append(
+            "In allegato c'è uno screenshot dello schermo principale dell'utente, catturato adesso. "
+            "Usalo per capire a cosa si riferiscono la domanda e la discussione (codice, errori, diagrammi, documenti)."
+        )
     if domanda_utente:
         parti.append(f"L'utente ti chiede direttamente: «{domanda_utente}». Rispondi tenendo conto della chiamata.")
+    elif schermo:
+        parti.append(
+            "L'utente ti mostra il suo schermo: indica cosa c'è di rilevante rispetto al punto in discussione "
+            "e suggerisci cosa dire o fare. Se lo schermo non c'entra con la call, dillo in una riga."
+        )
     elif focus:
         parti.append(f"Concentrati su questo intervento: «{focus}»")
     else:
         parti.append("L'utente ha chiesto un suggerimento adesso: aiutalo sul punto in discussione in questo momento.")
     return "\n\n".join(parti)
+
+
+def contenuto(messaggio: str, immagine=None):
+    """Contenuto del messaggio utente: solo testo, oppure immagine + testo."""
+    if immagine is None:
+        return messaggio
+    return [immagine.blocco(), {"type": "text", "text": messaggio}]
 
 
 class Assistente:
@@ -66,6 +84,7 @@ class Assistente:
         messaggio: str,
         su_testo: Callable[[str], None],
         annulla: threading.Event,
+        immagine=None,
     ) -> str:
         """Chiama Claude in streaming. Restituisce il testo completo."""
         completo = []
@@ -73,7 +92,7 @@ class Assistente:
             model=self.modello,
             max_tokens=self.max_token,
             system=self.sistema,
-            messages=[{"role": "user", "content": messaggio}],
+            messages=[{"role": "user", "content": contenuto(messaggio, immagine)}],
         ) as stream:
             for pezzo in stream.text_stream:
                 if annulla.is_set():
@@ -216,18 +235,24 @@ class AssistenteClaudeCode:
         if p is not None and p.poll() is None:
             p.terminate()
 
-    def suggerisci(self, messaggio: str, su_testo: Callable[[str], None], annulla: threading.Event) -> str:
+    def suggerisci(self, messaggio: str, su_testo: Callable[[str], None], annulla: threading.Event,
+                   immagine=None) -> str:
         for _ in range(len(self.opzionali) + 1):
-            esito = self._esegui(messaggio, su_testo, annulla)
+            esito = self._esegui(messaggio, su_testo, annulla, immagine)
             if esito[0] == "ok":
                 return esito[1]
             if esito[0] == "opzione":  # opzione sconosciuta: la tolgo e riprovo
                 self.opzionali = [o for o in self.opzionali if o[0] != esito[1]]
                 continue
+            if immagine is not None:
+                raise RuntimeError(
+                    esito[1] + " — Se succede solo con lo screenshot, la tua versione di Claude Code potrebbe "
+                    "non accettare immagini: aggiornala con 'claude update' e riprova con './avvia.sh --prova-schermo'."
+                )
             raise RuntimeError(esito[1])
         raise RuntimeError("Claude Code non accetta le opzioni richieste.")
 
-    def _esegui(self, messaggio, su_testo, annulla):
+    def _esegui(self, messaggio, su_testo, annulla, immagine=None):
         import json
         import subprocess
 
@@ -241,7 +266,7 @@ class AssistenteClaudeCode:
 
         threading.Thread(target=sorveglia, daemon=True).start()
         try:
-            riga = {"type": "user", "message": {"role": "user", "content": messaggio}}
+            riga = {"type": "user", "message": {"role": "user", "content": contenuto(messaggio, immagine)}}
             proc.stdin.write(json.dumps(riga, ensure_ascii=False) + "\n")
             proc.stdin.flush()
         except (BrokenPipeError, OSError):

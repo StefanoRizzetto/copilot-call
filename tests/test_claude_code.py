@@ -8,6 +8,8 @@ from pathlib import Path
 from copilota.assistente import AssistenteClaudeCode
 from copilota.config import carica
 from copilota.motore import Eventi, Motore
+from copilota.schermo import Immagine
+from tests.test_logica import PNG_1X1
 
 RADICE = Path(__file__).resolve().parent.parent
 FINTO = str(Path(__file__).resolve().parent / "claude_finto.py")
@@ -32,6 +34,13 @@ def test_streaming():
     out = a.suggerisci("domanda", pezzi.append, threading.Event())
     a.chiudi()
     assert out.startswith("**Usa il transactional") and "".join(pezzi) == out and len(pezzi) == 3
+
+
+def test_screenshot_nel_messaggio():
+    a = _nuovo("ok")
+    out = a.suggerisci("domanda", lambda p: None, threading.Event(), immagine=Immagine(PNG_1X1, "image/png"))
+    a.chiudi()
+    assert out.startswith("Vedo lo schermo.") and "outbox" in out
 
 
 def test_opzione_sconosciuta_viene_tolta():

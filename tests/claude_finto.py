@@ -3,6 +3,7 @@
 
 Il comportamento si sceglie con la variabile FAKE_MODO: ok | opzione | login | lento.
 """
+import base64
 import json
 import os
 import sys
@@ -14,7 +15,13 @@ if modo == "opzione" and "--safe-mode" in args:
     print("error: unknown option '--safe-mode'", file=sys.stderr)
     sys.exit(1)
 
-messaggio = json.loads(sys.stdin.readline())["message"]["content"]
+contenuto = json.loads(sys.stdin.readline())["message"]["content"]
+immagine = isinstance(contenuto, list)
+if immagine:  # screenshot: blocco image in base64 seguito dal testo
+    img = [b for b in contenuto if b.get("type") == "image"]
+    testo = [b for b in contenuto if b.get("type") == "text"]
+    assert img and testo and img[0]["source"]["type"] == "base64", contenuto
+    base64.b64decode(img[0]["source"]["data"], validate=True)
 assert "--input-format" in args
 assert "--system-prompt-file" in args and args[args.index("--tools") + 1] == ""
 assert "ANTHROPIC_API_KEY" not in os.environ, "la chiave API deve essere tolta dall'ambiente"
@@ -26,6 +33,8 @@ if modo == "login":
     sys.exit(1)
 
 pezzi = ["**Usa il transactional ", "outbox pattern.**\n", "- scrivi l'evento in una tabella outbox\n"]
+if immagine:
+    pezzi = ["Vedo lo schermo. "] + pezzi
 if modo == "lento":
     pezzi *= 20
 for p in pezzi:

@@ -1,8 +1,8 @@
 """Finestra sempre in primo piano con suggerimenti e trascrizione."""
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
@@ -32,6 +32,7 @@ QPushButton:hover { background: #e58a6c; }
 QPushButton#secondario { background: #2e3037; color: #e8e8ea; font-weight: 400; }
 QLabel#stato { color: #9a9ca5; font-size: 11px; }
 QLabel#errore { color: #ff8a80; font-size: 11px; }
+QLabel#miniatura { border: 1px solid #2e3037; border-radius: 4px; }
 """
 
 MAX_STORICO = 5
@@ -44,6 +45,7 @@ class Segnali(QObject):
     sugg_testo = Signal(str)
     sugg_fine = Signal(bool)
     errore = Signal(str)
+    schermo = Signal(bytes)
 
 
 class EventiQt(Eventi):
@@ -70,6 +72,9 @@ class EventiQt(Eventi):
     def errore(self, testo):
         self.s.errore.emit(testo)
 
+    def schermo(self, dati):
+        self.s.schermo.emit(dati)
+
 
 def nascondi_da_condivisione(widget: QWidget) -> bool:
     """Prova a escludere la finestra dalla condivisione schermo (NSWindowSharingNone).
@@ -95,6 +100,7 @@ class Finestra(QWidget):
         self.storico: list[str] = []
         self.corrente: str | None = None
         self.titolo_corrente = ""
+        self._catturando = False
 
         self.setWindowTitle("Copilota call")
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
@@ -117,12 +123,25 @@ class Finestra(QWidget):
         btn_pulisci = QPushButton("Pulisci")
         btn_pulisci.setObjectName("secondario")
         btn_pulisci.clicked.connect(self._pulisci)
+        btn_schermo = QPushButton("📸 Schermo")
+        btn_schermo.setObjectName("secondario")
+        btn_schermo.setToolTip(
+            "Manda a Claude lo schermo principale insieme alla domanda scritta, se c'è (⌘⇧↩)"
+        )
+        btn_schermo.clicked.connect(self._screenshot)
 
         barra = QHBoxLayout()
         barra.addWidget(self.chk_auto)
         barra.addStretch(1)
         barra.addWidget(btn_pulisci)
+        barra.addWidget(btn_schermo)
         barra.addWidget(btn_ora)
+
+        # Miniatura dell'ultimo screenshot mandato a Claude
+        self.miniatura = QLabel()
+        self.miniatura.setObjectName("miniatura")
+        self.miniatura.setToolTip("Ultimo screenshot mandato a Claude")
+        self.miniatura.hide()
 
         self.suggerimenti = QTextBrowser()
         self.suggerimenti.setOpenExternalLinks(True)
@@ -139,18 +158,20 @@ class Finestra(QWidget):
         divisore.setSizes([480, 160])
 
         self.domanda = QLineEdit()
-        self.domanda.setPlaceholderText("Chiedi qualcosa a Claude sulla call… (Invio)")
+        self.domanda.setPlaceholderText("Chiedi qualcosa a Claude sulla call… (Invio · ⌘⇧↩ con lo schermo)")
         self.domanda.returnPressed.connect(self._chiedi)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.addLayout(barra)
+        lay.addWidget(self.miniatura, 0, Qt.AlignmentFlag.AlignLeft)
         lay.addWidget(divisore, 1)
         lay.addWidget(self.domanda)
         lay.addWidget(self.lbl_errore)
         lay.addWidget(self.lbl_stato)
 
         QShortcut(QKeySequence("Ctrl+Return"), self, activated=self._suggerisci_ora)
+        QShortcut(QKeySequence("Ctrl+Shift+Return"), self, activated=self._screenshot)  # ⌘⇧↩ su macOS
 
         segnali.intervento.connect(self._intervento)
         segnali.stato.connect(self.lbl_stato.setText)
@@ -158,6 +179,7 @@ class Finestra(QWidget):
         segnali.sugg_testo.connect(self._sugg_testo)
         segnali.sugg_fine.connect(self._sugg_fine)
         segnali.errore.connect(self._errore)
+        segnali.schermo.connect(self._mostra_miniatura)
 
     # ---------- azioni ----------
     def _suggerisci_ora(self):
@@ -171,9 +193,37 @@ class Finestra(QWidget):
             self.domanda.clear()
             self.motore.chiedi(t)
 
+    def _screenshot(self):
+        """Cattura lo schermo principale e lo manda a Claude con la domanda scritta, se c'è."""
+        if self._catturando:
+            return
+        self._catturando = True
+        self.lbl_errore.hide()
+        domanda = self.domanda.text().strip() or None
+        self.domanda.clear()
+        # La finestra diventa trasparente per un attimo, così non compare nello screenshot.
+        self.setWindowOpacity(0.0)
+        QTimer.singleShot(150, lambda: self._scatta(domanda))
+
+    def _scatta(self, domanda):
+        from .schermo import cattura
+
+        try:
+            png = cattura(int(self.motore.cfg["schermo"]["numero"]))
+        except Exception as e:  # noqa: BLE001
+            self._errore(str(e))
+            if domanda:
+                self.domanda.setText(domanda)  # non perdere la domanda scritta
+            return
+        finally:
+            self.setWindowOpacity(1.0)
+            self._catturando = False
+        self.motore.chiedi_su_schermo(png, domanda)
+
     def _pulisci(self):
         self.storico.clear()
         self.corrente = None
+        self.miniatura.hide()
         self._mostra()
 
     # ---------- eventi ----------
@@ -202,6 +252,12 @@ class Finestra(QWidget):
     def _errore(self, testo):
         self.lbl_errore.setText(testo)
         self.lbl_errore.show()
+
+    def _mostra_miniatura(self, dati):
+        pix = QPixmap()
+        if pix.loadFromData(dati):
+            self.miniatura.setPixmap(pix.scaledToHeight(64, Qt.TransformationMode.SmoothTransformation))
+            self.miniatura.show()
 
     # ---------- disegno ----------
     def _archivia(self, testo):

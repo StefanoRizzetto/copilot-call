@@ -1,4 +1,4 @@
-"""Avvio: python -m copilota [--dispositivi | --prova-audio | --solo-trascrizione]"""
+"""Avvio: python -m copilota [--dispositivi | --prova-audio | --solo-trascrizione | --prova-claude | --prova-schermo]"""
 from __future__ import annotations
 
 import argparse
@@ -112,6 +112,54 @@ def prova_claude(cfg, modello=None):
         print(f"· {nome}: primo testo dopo {primo:.1f}s, completo dopo {totale:.1f}s")
 
 
+def prova_schermo(cfg, modello=None):
+    """Cattura lo schermo, lo manda a Claude e misura i tempi: verifica permesso e supporto immagini."""
+    import tempfile
+    import threading
+
+    from .assistente import Assistente, AssistenteClaudeCode, costruisci_messaggio
+    from .motore import modelli
+    from .schermo import cattura, dimensioni_png, prepara
+
+    s, c = cfg["schermo"], cfg["claude"]
+    t0 = time.time()
+    png = cattura(int(s["numero"]))
+    t_cattura = time.time() - t0
+    t0 = time.time()
+    immagine = prepara(png, int(s["lato_max"]), int(s["qualita"]))
+    t_prepara = time.time() - t0
+    dim = dimensioni_png(png) or (0, 0)
+    print(f"Schermo {s['numero']}: {dim[0]}×{dim[1]} px, catturato in {t_cattura:.2f}s")
+    print(f"Da mandare a Claude: {immagine.tipo}, {len(immagine.dati) // 1024} KB, preparato in {t_prepara:.2f}s")
+    estensione = ".jpg" if immagine.tipo == "image/jpeg" else ".png"
+    file = Path(tempfile.gettempdir()) / f"copilota-prova-schermo{estensione}"
+    file.write_bytes(immagine.dati)
+    print(f"Per vedere cosa riceve Claude: open {file}")
+    print("(se vedi solo lo sfondo senza finestre, manca il permesso di Registrazione schermo)\n")
+
+    modello = modello or modelli(c)["manuale"]
+    if c.get("motore", "claude-code") == "api":
+        a = Assistente(modello, int(c["max_token"]))
+    else:
+        a = AssistenteClaudeCode(modello, "", c.get("percorso_claude", ""), c.get("sforzo", "low"), preriscalda=False)
+    domanda = "Descrivi in due righe cosa vedi sullo schermo."
+    msg = costruisci_messaggio("", domanda_utente=domanda, schermo=True)
+    print(f"── {modello}: «{domanda}»\n")
+    t0 = time.time()
+    primo = []
+
+    def stampa(p):
+        if not primo:
+            primo.append(time.time() - t0)
+        print(p, end="", flush=True)
+
+    a.suggerisci(msg, stampa, threading.Event(), immagine=immagine)
+    totale = time.time() - t0
+    if hasattr(a, "chiudi"):
+        a.chiudi()
+    print(f"\n\n· primo testo dopo {primo[0] if primo else 0:.1f}s, completo dopo {totale:.1f}s (avvio a freddo)")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="copilota", description="Suggerimenti di Claude in tempo reale durante le call.")
     p.add_argument("--config", default=str(CARTELLA / "config.toml"))
@@ -119,13 +167,22 @@ def main(argv=None):
     p.add_argument("--prova-audio", action="store_true", help="mostra i livelli di microfono e BlackHole")
     p.add_argument("--solo-trascrizione", action="store_true", help="trascrive nel terminale, senza Claude né finestra")
     p.add_argument("--prova-claude", action="store_true", help="chiede due suggerimenti di prova a Claude e misura i tempi")
-    p.add_argument("--modello", help="con --prova-claude: prova un altro modello (es. claude-haiku-5-5)")
+    p.add_argument("--prova-schermo", action="store_true",
+                   help="cattura lo schermo principale e lo manda a Claude: verifica permesso e tempi")
+    p.add_argument("--modello", help="con --prova-claude o --prova-schermo: prova un altro modello (es. claude-haiku-5-5)")
     args = p.parse_args(argv)
     cfg = carica(Path(args.config))
 
     if args.prova_claude:
         try:
             prova_claude(cfg, args.modello)
+        except Exception as e:  # noqa: BLE001
+            print(f"\n! {e}", file=sys.stderr)
+            sys.exit(1)
+        return
+    if args.prova_schermo:
+        try:
+            prova_schermo(cfg, args.modello)
         except Exception as e:  # noqa: BLE001
             print(f"\n! {e}", file=sys.stderr)
             sys.exit(1)

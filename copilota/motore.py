@@ -32,6 +32,7 @@ class Eventi:
     def sugg_testo(self, pezzo: str): ...
     def sugg_fine(self, vuoto: bool): ...
     def errore(self, testo: str): ...
+    def schermo(self, dati: bytes): ...  # screenshot appena mandato a Claude (per la miniatura)
 
 
 class Conversazione:
@@ -222,7 +223,31 @@ class Motore:
     def chiedi(self, domanda: str):
         self._lancia("manuale", domanda_utente=domanda, titolo=f"Domanda: {domanda}")
 
-    def _lancia(self, tipo, focus=None, domanda_utente=None, titolo=""):
+    def chiedi_su_schermo(self, png: bytes, domanda: str | None = None):
+        """Suggerimento su richiesta con lo screenshot dello schermo (PNG già catturato).
+
+        L'immagine viene ridotta e convertita in un thread a parte, poi parte come una
+        richiesta manuale (modello su richiesta). Non viene salvata da nessuna parte.
+        """
+        with self._lock:
+            self._pendente = None
+
+        def lavora():
+            from .schermo import prepara
+
+            s = self.cfg["schermo"]
+            try:
+                immagine = prepara(png, int(s["lato_max"]), int(s["qualita"]))
+            except Exception as e:  # noqa: BLE001
+                self.ev.errore(f"Errore nella preparazione dello screenshot: {e}")
+                return
+            self.ev.schermo(immagine.dati)
+            titolo = f"📸 Domanda: {domanda}" if domanda else "📸 Schermo"
+            self._lancia("manuale", domanda_utente=domanda, titolo=titolo, immagine=immagine)
+
+        threading.Thread(target=lavora, daemon=True).start()
+
+    def _lancia(self, tipo, focus=None, domanda_utente=None, titolo="", immagine=None):
         assistente = self.assistenti.get(tipo)
         if not self.usa_claude or assistente is None:
             self.ev.errore("Claude non è ancora pronto.")
@@ -235,22 +260,26 @@ class Motore:
             self._annulla = annulla
         minuti = float(self.cfg["claude"]["minuti_contesto"])
         msg = costruisci_messaggio(
-            self.conversazione.recente(minuti), focus, domanda_utente, list(self._precedenti)
+            self.conversazione.recente(minuti), focus, domanda_utente, list(self._precedenti),
+            schermo=immagine is not None,
         )
         nome = self.nomi_modelli.get(tipo, "")
         if nome:
             titolo += " · " + nome.replace("claude-", "").split("-")[0].capitalize()
-        threading.Thread(target=self._esegui, args=(assistente, gen, msg, titolo, annulla), daemon=True).start()
+        threading.Thread(
+            target=self._esegui, args=(assistente, gen, msg, titolo, annulla, immagine), daemon=True
+        ).start()
 
-    def _esegui(self, assistente, gen, msg, titolo, annulla):
+    def _esegui(self, assistente, gen, msg, titolo, annulla, immagine=None):
         attuale = lambda: gen == self._generazione and not annulla.is_set()  # noqa: E731
         if not attuale():
             return
         self.ev.sugg_inizio(titolo)
         self.ev.stato("Claude sta pensando…")
         try:
+            extra = {"immagine": immagine} if immagine is not None else {}
             testo = assistente.suggerisci(
-                msg, lambda pezzo: attuale() and self.ev.sugg_testo(pezzo), annulla
+                msg, lambda pezzo: attuale() and self.ev.sugg_testo(pezzo), annulla, **extra
             )
         except Exception as e:  # noqa: BLE001
             if attuale():

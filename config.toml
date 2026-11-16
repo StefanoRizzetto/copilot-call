@@ -46,3 +46,11 @@ attesa_s = 0.6
 attesa_max_s = 2.5
 pausa_minima_s = 10.0
 solo_interlocutore = false
+
+[schermo]
+# Schermo catturato dal bottone 📸 (⌘⇧↩): 1 = principale, quello con la barra dei menu.
+# Per cambiarlo: Impostazioni di Sistema → Monitor → "Usa come monitor principale", oppure 2, 3…
+numero = 1
+# Lato lungo massimo dello screenshot mandato a Claude (pixel) e qualità JPEG.
+lato_max = 1568
+qualita = 80

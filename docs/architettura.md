@@ -9,9 +9,10 @@ Un'app Python per macOS che:
 2. divide l'audio in frasi con un rilevatore di voce basato sull'energia;
 3. trascrive ogni frase in locale con Whisper (mlx-whisper su Apple Silicon);
 4. riconosce le domande tecniche con espressioni regolari;
-5. chiede un suggerimento a Claude tramite `claude -p` (Claude Code, abbonamento) e lo mostra in streaming in una finestra PySide6 sempre in primo piano.
+5. chiede un suggerimento a Claude tramite `claude -p` (Claude Code, abbonamento) e lo mostra in streaming in una finestra PySide6 sempre in primo piano;
+6. su richiesta (📸 o ⌘⇧↩) allega uno screenshot dello schermo principale.
 
-L'audio non lascia il Mac e non viene salvato. A Claude arriva solo il testo degli ultimi `minuti_contesto` minuti, e solo quando serve un suggerimento.
+L'audio non lascia il Mac e non viene salvato. A Claude arriva solo il testo degli ultimi `minuti_contesto` minuti, e solo quando serve un suggerimento; lo screenshot solo quando l'utente preme 📸.
 
 ## Flusso dei dati e thread
 
@@ -30,6 +31,7 @@ L'audio non lascia il Mac e non viene salvato. A Claude arriva solo il testo deg
                                                                                                           │ (streaming)
  Finestra (thread Qt) ◄──────────────────── segnali Qt (EventiQt) ◄────────────────────────────────────────┘
    ⌘↩ / domanda scritta ──► _lancia("manuale")
+   📸 / ⌘⇧↩ ──► schermo.cattura ──► chiedi_su_schermo ──► _lancia("manuale", immagine)
 ```
 
 Tutti i thread di lavoro comunicano con la finestra solo tramite segnali Qt (`finestra.EventiQt`), quindi l'interfaccia viene aggiornata sempre dal thread principale.
@@ -38,7 +40,7 @@ Tutti i thread di lavoro comunicano con la finestra solo tramite segnali Qt (`fi
 
 | File | Ruolo |
 |---|---|
-| `copilota/__main__.py` | Avvio e comandi di diagnosi: `--dispositivi`, `--prova-audio`, `--solo-trascrizione`, `--prova-claude [--modello]` |
+| `copilota/__main__.py` | Avvio e comandi di diagnosi: `--dispositivi`, `--prova-audio`, `--solo-trascrizione`, `--prova-claude [--modello]`, `--prova-schermo [--modello]` |
 | `copilota/config.py` | Valori predefiniti e lettura di `config.toml` (unione profonda) |
 | `copilota/audio.py` | `Cattura`: legge un dispositivo di ingresso con `sounddevice`, converte in mono float32, mette i blocchi in coda |
 | `copilota/segmentatore.py` | Rilevatore di voce a energia, adattivo sul rumore di fondo; restituisce frasi complete |
@@ -46,7 +48,8 @@ Tutti i thread di lavoro comunicano con la finestra solo tramite segnali Qt (`fi
 | `copilota/trigger.py` | Espressioni regolari che riconoscono domande e decisioni tecniche (italiano e inglese) |
 | `copilota/assistente.py` | Prompt di sistema e costruzione del messaggio; `Assistente` (API) e `AssistenteClaudeCode` (`claude -p`) |
 | `copilota/motore.py` | Orchestrazione: thread, conversazione, attesa e pausa minima, due modelli, annullamento |
-| `copilota/finestra.py` | Finestra PySide6: suggerimenti (Markdown, ultimi 5), trascrizione, campo domanda, ⌘↩ |
+| `copilota/schermo.py` | `cattura()` con `screencapture`, `prepara()` (riduzione e JPEG con `sips`), `Immagine` (blocco `image` in base64) |
+| `copilota/finestra.py` | Finestra PySide6: suggerimenti (Markdown, ultimi 5), trascrizione, campo domanda, ⌘↩, 📸 / ⌘⇧↩ con miniatura |
 | `tests/` | Test senza audio né Claude veri: `.venv/bin/python tests/esegui.py` |
 
 ## Componenti nel dettaglio
@@ -82,7 +85,7 @@ Rilevatore a energia, scelto perché non richiede modelli né dipendenze in più
 - **Attesa:** dopo la domanda si aspettano `attesa_s` secondi, perché spesso la domanda continua nella frase successiva. Ogni nuova frase in quel periodo si aggiunge alla domanda e allunga l'attesa, fino a `attesa_max_s` dalla prima.
 - **Pausa minima:** tra due suggerimenti automatici passano almeno `pausa_minima_s` secondi.
 - **`solo_interlocutore = true`:** gli automatici partono solo dalle domande degli altri.
-- **Su richiesta:** ⌘↩ o "Suggerisci ora" (sul punto in discussione) e la domanda scritta. Annullano un eventuale suggerimento automatico in attesa.
+- **Su richiesta:** ⌘↩ o "Suggerisci ora" (sul punto in discussione), la domanda scritta e 📸 / ⌘⇧↩ (con lo screenshot). Annullano un eventuale suggerimento automatico in attesa.
 - **Annullamento:** un nuovo suggerimento interrompe quello in corso. Un contatore di generazione impedisce che pezzi di testo del vecchio arrivino nella finestra; quello interrotto finisce nello storico con "(interrotto)".
 
 ### Prompt
@@ -110,11 +113,29 @@ claude -p --input-format stream-json --output-format stream-json --verbose --inc
 
 Con `motore = "api"` si usa invece l'SDK `anthropic` (streaming, prompt di sistema in cache) con la chiave `ANTHROPIC_API_KEY`.
 
+### Screenshot (📸 / ⌘⇧↩)
+
+```
+Finestra._screenshot ─► opacità 0 ─(150 ms)─► schermo.cattura (screencapture -x -D n, PNG) ─► opacità 1
+   └─► Motore.chiedi_su_schermo(png, domanda) ─► thread: schermo.prepara (sips: lato ≤ 1568 px, JPEG 80)
+          ─► evento "schermo" (miniatura) ─► _lancia("manuale", immagine=…) ─► Assistente.suggerisci(…, immagine)
+```
+
+- **Quale schermo:** `[schermo] numero` (predefinito 1 = principale, quello con la barra dei menu). Non è necessariamente quello con il Dock: con "I monitor hanno spazi separati" il Dock si sposta.
+- **La finestra non compare:** viene resa trasparente per 150 ms durante la cattura. `sharingType = none` da solo non basta: su macOS recenti la cattura tramite ScreenCaptureKit può ignorarlo.
+- **Dimensione:** uno screenshot Retina pesa diversi MB; `sips` (incluso in macOS, nessuna dipendenza) lo porta a `lato_max` px sul lato lungo, in JPEG `qualita` 80 (qualche centinaio di KB, circa 1.500 token). Se `sips` fallisce si manda il PNG originale.
+- **Messaggio:** il contenuto diventa una lista `[{"type":"image","source":{"type":"base64",…}}, {"type":"text",…}]`, uguale per l'API e per `claude -p --input-format stream-json` (con `--tools ""` Claude non può leggere file, quindi l'immagine deve stare nel messaggio). Il testo dice che c'è uno screenshot; senza domanda scritta chiede cosa c'è di rilevante rispetto alla discussione.
+- **Modello:** sempre quello su richiesta (Sonnet). Annulla un eventuale suggerimento automatico in attesa.
+- **Privacy:** il PNG passa da un file temporaneo cancellato subito dopo la lettura; per il resto l'immagine resta in memoria.
+- **Permesso:** serve "Registrazione schermo" per il Terminale. Senza, `screencapture` può restituire solo lo sfondo senza errore: `--prova-schermo` salva l'immagine di prova nella cartella temporanea per controllarla.
+- **Errori:** se Claude Code fallisce solo con l'immagine, il messaggio suggerisce `claude update` (in alcune versioni l'input stream-json con immagini ha avuto bug).
+
 ### Finestra
 
 - PySide6, `WindowStaysOnTopHint`. Non è una finestra di tipo "Tool", perché su macOS quelle si nascondono quando l'app perde il focus.
 - Tenta di escludersi dalla condivisione schermo con `NSWindow.sharingType = none` (via PyObjC). Non tutte le app di videoconferenza lo rispettano: va verificato.
-- Mostra il suggerimento in corso più gli ultimi 5, il più recente in alto; l'intestazione indica il motivo e il modello ("Domanda rilevata · Haiku").
+- Mostra il suggerimento in corso più gli ultimi 5, il più recente in alto; l'intestazione indica il motivo e il modello ("Domanda rilevata · Haiku", "📸 Schermo · Sonnet").
+- Bottone "📸 Schermo" e ⌘⇧↩: usano la domanda scritta nel campo, se c'è; sotto la barra compare la miniatura dell'ultimo screenshot mandato.
 
 ## Tempi misurati
 
@@ -126,6 +147,8 @@ Misure fatte il 16/11/2026 sul MacBook Pro (Apple Silicon) con `./avvia.sh --pro
 | Haiku 5.5 | 1,1 s / 4,2 s | 0,8 s / 3,6 s |
 
 Prima che il messaggio parta verso Claude si aggiungono `silenzio_fine_ms` (0,55 s), la trascrizione Whisper (non ancora misurata a parte; su Apple Silicon dovrebbe essere sotto il secondo per una frase) e `attesa_s` (0,6 s). Con Haiku, quindi, il suggerimento automatico dovrebbe comparire in circa 2-3 secondi dalla fine della domanda. È una stima, da misurare in una call vera.
+
+Con lo screenshot (`./avvia.sh --prova-schermo`, stesso giorno, modello su richiesta predefinito, Sonnet 5.5, avvio a freddo): **primo testo dopo 1,3 s, completo dopo 3,7 s**. La domanda di prova chiede una descrizione di due righe, quindi la risposta è più corta di quelle di `--prova-claude`: i tempi non sono direttamente confrontabili, ma l'immagine non aggiunge un ritardo apprezzabile. Cattura e riduzione con `sips` sono escluse da questi tempi (`--prova-schermo` le stampa a parte).
 
 Con Sonnet 5.5 e Haiku 5.5 il ragionamento interno non si può disattivare: per ridurre i tempi si agisce su `--effort` (sforzo) e sulla scelta del modello.
 
@@ -141,6 +164,8 @@ Con Sonnet 5.5 e Haiku 5.5 il ragionamento interno non si può disattivare: per 
 | `claude -p` con l'abbonamento | Richiesta dell'utente: niente chiave API né costi a parte | API (rimane disponibile con `motore = "api"`); modello locale con Ollama (tutto offline, qualità inferiore) |
 | Processo `claude` sempre pronto | Toglie circa 1,4 s di avvio a ogni suggerimento | Una sessione unica per tutta la call: contesto che cresce e risposte influenzate dalle precedenti |
 | Haiku per gli automatici, Sonnet su richiesta | Haiku: 0,8 s al primo testo; Sonnet ragiona meglio quando è l'utente a chiedere | Un solo modello per tutto |
+| Screenshot solo su richiesta, dello schermo principale | Utile quando la domanda riguarda qualcosa sullo schermo; l'utente decide ogni volta cosa esce dal Mac | Screenshot automatico su frasi come «guarda qui» (più costoso, rischio di mandare dati non voluti); selezione di una zona con `screencapture -i` (più precisa ma lenta durante una call) |
+| `screencapture` + `sips` | Strumenti di sistema: nessuna dipendenza nuova | ScreenCaptureKit via PyObjC (più codice), Pillow per il ridimensionamento |
 | Tempi di attesa 550 ms / 0,6 s / 2,5 s | Reattività; prima erano 700 ms / 1,5 s / 4 s | Se le domande vengono spezzate, alzare `attesa_s` a 1,0 |
 
 ## Limiti noti
@@ -150,13 +175,16 @@ Con Sonnet 5.5 e Haiku 5.5 il ragionamento interno non si può disattivare: per 
 - Il dispositivo a uscita multipla disattiva i tasti del volume del Mac finché è selezionato come uscita di sistema.
 - Le espressioni regolari possono perdere domande formulate in modo insolito (rimedio: ⌘↩) o scattare su frasi retoriche (mitigato dalla pausa minima e dalla risposta «—»).
 - Whisper può storpiare i nomi di librerie poco comuni: aggiungerli a `vocabolario`.
-- Ogni suggerimento consuma un po' dei limiti di utilizzo del piano Claude.
+- Ogni suggerimento consuma un po' dei limiti di utilizzo del piano Claude; quelli con screenshot un po' di più.
+- Lo screenshot include tutto lo schermo principale (notifiche, chat, dati dei clienti): l'utente deve tenerne conto prima di premere 📸.
+- Il supporto delle immagini in `claude -p --input-format stream-json` è verificato sulla versione installata il 16/11/2026; dopo un aggiornamento di Claude Code conviene ripetere `--prova-schermo`.
 
 ## Possibili sviluppi
 
 - Helper Swift con ScreenCaptureKit o i process tap per catturare l'audio della call senza BlackHole.
 - Silero VAD al posto del rilevatore a energia, per ambienti rumorosi.
-- Scorciatoia globale (fuori dalla finestra) per "Suggerisci ora".
+- Scorciatoia globale (fuori dalla finestra) per "Suggerisci ora" e per 📸.
+- Cattura di una sola finestra (l'app condivisa nella call) o di una zona selezionata.
 - Riassunto della call a fine riunione, con le decisioni prese e le cose da fare (opzionale, con consenso).
 - Profili di contesto diversi per cliente o progetto (`contesto-<cliente>.md`).
 
@@ -167,7 +195,7 @@ Con Sonnet 5.5 e Haiku 5.5 il ragionamento interno non si può disattivare: per 
 ```
 
 I test non usano né audio vero né Claude vero:
-- `test_logica.py`: segmentazione su audio sintetico, ricampionamento, filtro delle allucinazioni, trigger, scelta dei modelli, motore con un client API finto (attesa, pausa minima, contenuto dei messaggi);
-- `test_claude_code.py`: `AssistenteClaudeCode` con `tests/claude_finto.py` (streaming, opzione sconosciuta, errore di accesso, annullamento, processo pronto riusato, due modelli).
+- `test_logica.py`: segmentazione su audio sintetico, ricampionamento, filtro delle allucinazioni, trigger, scelta dei modelli, motore con un client API finto (attesa, pausa minima, contenuto dei messaggi), messaggio e motore con screenshot;
+- `test_claude_code.py`: `AssistenteClaudeCode` con `tests/claude_finto.py` (streaming, opzione sconosciuta, errore di accesso, annullamento, processo pronto riusato, due modelli, screenshot nel messaggio stream-json).
 
-Per una prova end-to-end: `./avvia.sh --prova-claude`, poi `./avvia.sh` con un video YouTube in riproduzione.
+Per una prova end-to-end: `./avvia.sh --prova-claude` e `./avvia.sh --prova-schermo`, poi `./avvia.sh` con un video YouTube in riproduzione.
