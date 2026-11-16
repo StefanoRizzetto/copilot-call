@@ -54,3 +54,11 @@ numero = 1
 # Lato lungo massimo dello screenshot mandato a Claude (pixel) e qualità JPEG.
 lato_max = 1568
 qualita = 80
+
+[scorciatoie]
+# Funzionano in tutto il Mac, anche quando la finestra del copilota non è in primo piano.
+# Modificatori: ctrl, alt, shift, cmd (serve almeno ctrl o cmd); tasti: lettere, numeri, return, space, tab.
+# "" = disattivata. Se una combinazione è già usata da un'altra app, la finestra lo segnala.
+suggerisci = "ctrl+cmd+return"   # ⌃⌘↩  Suggerisci ora
+schermo = "ctrl+cmd+s"           # ⌃⌘S  📸 Schermo
+pausa = "ctrl+cmd+p"             # ⌃⌘P  Pausa / riprendi l'ascolto

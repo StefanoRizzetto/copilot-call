@@ -59,6 +59,12 @@ PREDEFINITI: dict = {
         "lato_max": 1568,
         "qualita": 80,
     },
+    "scorciatoie": {
+        # Funzionano anche quando la finestra del copilota non è in primo piano. "" = disattivata.
+        "suggerisci": "ctrl+cmd+return",
+        "schermo": "ctrl+cmd+s",
+        "pausa": "ctrl+cmd+p",
+    },
 }
 
 

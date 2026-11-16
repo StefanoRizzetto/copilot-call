@@ -8,6 +8,8 @@ import time
 from collections import deque
 from pathlib import Path
 
+import numpy as np
+
 from .assistente import NESSUN_SUGGERIMENTO, Assistente, AssistenteClaudeCode, costruisci_messaggio
 from .segmentatore import Segmentatore
 from .trigger import sembra_richiesta
@@ -23,6 +25,12 @@ def modelli(c: dict) -> dict:
     }
 
 
+def livello_db(blocco) -> float:
+    """Livello RMS di un blocco audio in dBFS (minimo −100)."""
+    rms = float(np.sqrt(np.mean(np.asarray(blocco, dtype=np.float64) ** 2))) if len(blocco) else 0.0
+    return 20.0 * np.log10(max(rms, 1e-5))
+
+
 class Eventi:
     """Ricevitore degli eventi del motore (la finestra o il terminale)."""
 
@@ -33,6 +41,7 @@ class Eventi:
     def sugg_fine(self, vuoto: bool): ...
     def errore(self, testo: str): ...
     def schermo(self, dati: bytes): ...  # screenshot appena mandato a Claude (per la miniatura)
+    def livelli(self, valori: dict): ...  # {etichetta: dBFS di picco}, circa 10 volte al secondo
 
 
 class Conversazione:
@@ -79,6 +88,8 @@ class Motore:
         self._generazione = 0
         self._annulla = threading.Event()
         self._precedenti: deque = deque(maxlen=3)
+        self.in_pausa = False
+        self._ricomincia = False  # alla ripresa i segmentatori scartano la frase interrotta
 
     # ---------- avvio / arresto ----------
     def avvia(self):
@@ -157,13 +168,30 @@ class Motore:
 
     # ---------- pipeline ----------
     def _ciclo_segmenti(self):
+        picchi: dict[str, float] = {}
+        prossimo = time.time() + 0.1
         while not self._stop.is_set():
             try:
-                chi, blocco = self.coda_audio.get(timeout=0.2)
+                chi, blocco = self.coda_audio.get(timeout=0.1)
             except queue.Empty:
-                continue
-            for frase in self.segmentatori[chi].aggiungi(blocco):
-                self.coda_frasi.put((chi, frase, self.sr[chi]))
+                chi = None
+            if chi is not None:
+                # il livello si misura sempre, anche in pausa, per gli indicatori della finestra
+                picchi[chi] = max(picchi.get(chi, -100.0), livello_db(blocco))
+                if self.in_pausa:
+                    self._ricomincia = True  # in pausa l'audio viene scartato
+                else:
+                    if self._ricomincia:
+                        for seg in self.segmentatori.values():
+                            seg.ricomincia()
+                        self._ricomincia = False
+                    for frase in self.segmentatori[chi].aggiungi(blocco):
+                        self.coda_frasi.put((chi, frase, self.sr[chi]))
+            if time.time() >= prossimo:
+                if picchi:
+                    self.ev.livelli(dict(picchi))
+                    picchi.clear()
+                prossimo = time.time() + 0.1
 
     def _ciclo_trascrizione(self):
         from .trascrittore import ricampiona
@@ -172,6 +200,8 @@ class Motore:
             try:
                 chi, frase, sr = self.coda_frasi.get(timeout=0.2)
             except queue.Empty:
+                continue
+            if self.in_pausa:
                 continue
             try:
                 testo = self.trascrittore.trascrivi(ricampiona(frase, sr))
@@ -182,6 +212,8 @@ class Motore:
                 self.nuova_frase(chi, testo)
 
     def nuova_frase(self, chi: str, testo: str):
+        if self.in_pausa:  # frase finita di trascrivere dopo la pausa: si scarta
+            return
         self.conversazione.aggiungi(chi, testo)
         self.ev.intervento(chi, testo)
         if not self.usa_claude:
@@ -213,6 +245,31 @@ class Motore:
                 self._pendente = None
                 self._ultimo_auto = time.time()
             self._lancia("auto", focus=p["focus"], titolo="Domanda rilevata")
+
+    # ---------- pausa ----------
+    def imposta_pausa(self, pausa: bool):
+        """In pausa l'audio non viene trascritto né mandato a Claude (si misurano solo i livelli)."""
+        with self._lock:
+            if pausa == self.in_pausa:
+                return
+            self.in_pausa = pausa
+            if pausa:
+                self._pendente = None  # niente suggerimenti automatici su frasi di prima
+        if pausa:
+            while True:  # frasi già pronte ma non ancora trascritte
+                try:
+                    self.coda_frasi.get_nowait()
+                except queue.Empty:
+                    break
+            nota = "(ascolto in pausa: da qui una parte della call non è stata trascritta)"
+        else:
+            nota = "(ascolto ripreso)"
+        self.conversazione.aggiungi("Nota", nota)
+        self.ev.intervento("Nota", nota)
+        self.ev.stato(self._testo_stato())
+
+    def _testo_stato(self) -> str:
+        return "In pausa · l'audio non viene trascritto" if self.in_pausa else "In ascolto"
 
     # ---------- richieste ----------
     def suggerisci_ora(self):
@@ -290,4 +347,4 @@ class Motore:
             if not vuoto:
                 self._precedenti.append(testo.strip())
             self.ev.sugg_fine(vuoto)
-            self.ev.stato("In ascolto")
+            self.ev.stato(self._testo_stato())

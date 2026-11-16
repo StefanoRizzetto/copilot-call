@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import queue
 import sys
 import time
@@ -215,7 +216,14 @@ def main(argv=None):
     finestra.show()
     nascondi_da_condivisione(finestra)
     motore.avvia()
-    sys.exit(app.exec())
+    codice = app.exec()
+    # Chiusura ordinata, poi uscita immediata. Lasciando a Python la chiusura normale, PySide6
+    # distrugge i widget rimasti durante lo spegnimento dell'interprete e a volte va in crash
+    # (segmentation fault in QObject::~QObject). Non c'è niente da salvare, quindi os._exit è sicuro.
+    finestra.chiudi_tutto()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(codice)
 
 
 if __name__ == "__main__":

@@ -37,6 +37,12 @@ class Segmentatore:
         self.preroll: deque = deque(maxlen=max(1, preroll_ms // frame_ms))
         self._azzera()
 
+    def ricomincia(self):
+        """Scarta la frase in corso e l'audio non ancora elaborato; tiene la stima del rumore."""
+        self.residuo = np.zeros(0, dtype=np.float32)
+        self.preroll.clear()
+        self._azzera()
+
     def _azzera(self):
         self.in_voce = False
         self.frames: list[np.ndarray] = []

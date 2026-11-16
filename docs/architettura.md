@@ -10,7 +10,8 @@ Un'app Python per macOS che:
 3. trascrive ogni frase in locale con Whisper (mlx-whisper su Apple Silicon);
 4. riconosce le domande tecniche con espressioni regolari;
 5. chiede un suggerimento a Claude tramite `claude -p` (Claude Code, abbonamento) e lo mostra in streaming in una finestra PySide6 sempre in primo piano;
-6. su richiesta (📸 o ⌘⇧↩) allega uno screenshot dello schermo principale.
+6. su richiesta (📸 o ⌘⇧↩) allega uno screenshot dello schermo principale;
+7. mostra i livelli audio dei due canali, si può mettere in pausa e risponde a scorciatoie globali di macOS.
 
 L'audio non lascia il Mac e non viene salvato. A Claude arriva solo il testo degli ultimi `minuti_contesto` minuti, e solo quando serve un suggerimento; lo screenshot solo quando l'utente preme 📸.
 
@@ -32,6 +33,8 @@ L'audio non lascia il Mac e non viene salvato. A Claude arriva solo il testo deg
  Finestra (thread Qt) ◄──────────────────── segnali Qt (EventiQt) ◄────────────────────────────────────────┘
    ⌘↩ / domanda scritta ──► _lancia("manuale")
    📸 / ⌘⇧↩ ──► schermo.cattura ──► chiedi_su_schermo ──► _lancia("manuale", immagine)
+   ⏸ ──► imposta_pausa        livelli audio: thread segmenti ──► evento "livelli" (10 al secondo) ──► barrette
+   scorciatoie globali (Carbon, thread principale) ──► stesse azioni dei bottoni
 ```
 
 Tutti i thread di lavoro comunicano con la finestra solo tramite segnali Qt (`finestra.EventiQt`), quindi l'interfaccia viene aggiornata sempre dal thread principale.
@@ -49,7 +52,8 @@ Tutti i thread di lavoro comunicano con la finestra solo tramite segnali Qt (`fi
 | `copilota/assistente.py` | Prompt di sistema e costruzione del messaggio; `Assistente` (API) e `AssistenteClaudeCode` (`claude -p`) |
 | `copilota/motore.py` | Orchestrazione: thread, conversazione, attesa e pausa minima, due modelli, annullamento |
 | `copilota/schermo.py` | `cattura()` con `screencapture`, `prepara()` (riduzione e JPEG con `sips`), `Immagine` (blocco `image` in base64) |
-| `copilota/finestra.py` | Finestra PySide6: suggerimenti (Markdown, ultimi 5), trascrizione, campo domanda, ⌘↩, 📸 / ⌘⇧↩ con miniatura |
+| `copilota/scorciatoie.py` | Scorciatoie globali: `analizza()` ("ctrl+cmd+return" → codice, modificatori, "⌃⌘↩") e `ScorciatoieGlobali` (`RegisterEventHotKey` via ctypes) |
+| `copilota/finestra.py` | Finestra PySide6: suggerimenti (Markdown, ultimi 5), trascrizione, campo domanda, ⌘↩, 📸 / ⌘⇧↩ con miniatura, livelli audio, pausa, scorciatoie globali |
 | `tests/` | Test senza audio né Claude veri: `.venv/bin/python tests/esegui.py` |
 
 ## Componenti nel dettaglio
@@ -59,6 +63,7 @@ Tutti i thread di lavoro comunicano con la finestra solo tramite segnali Qt (`fi
 - Il microfono è il dispositivo di ingresso predefinito, oppure quello il cui nome contiene `audio.microfono`.
 - La voce degli altri arriva da BlackHole: nell'app della call l'uscita è un "dispositivo a uscita multipla" che manda l'audio sia alle cuffie sia a BlackHole.
 - Ogni canale ha un'etichetta (`Io` / `Interlocutore`), quindi non serve riconoscere chi parla dalla voce.
+- Il microfono si legge a livello di macOS: conta il volume di ingresso di sistema, non le regolazioni (guadagno automatico, riduzione del rumore) dell'app della call. Livelli di riferimento in `--prova-audio`: picchi tra −35 e −15 dBFS parlando normalmente; sotto −45 dBFS la voce rischia di finire sotto `soglia_min_db` (−50) ed essere scartata.
 - Lo stream gira alla frequenza nativa del dispositivo (di solito 48 kHz); il ricampionamento a 16 kHz si fa una volta per frase, con `scipy.signal.resample_poly`.
 
 ### Segmentazione (rilevamento delle frasi)
@@ -130,12 +135,33 @@ Finestra._screenshot ─► opacità 0 ─(150 ms)─► schermo.cattura (screen
 - **Permesso:** serve "Registrazione schermo" per il Terminale. Senza, `screencapture` può restituire solo lo sfondo senza errore: `--prova-schermo` salva l'immagine di prova nella cartella temporanea per controllarla.
 - **Errori:** se Claude Code fallisce solo con l'immagine, il messaggio suggerisce `claude update` (in alcune versioni l'input stream-json con immagini ha avuto bug).
 
+### Livelli audio
+
+- Nel thread dei segmenti, per ogni blocco (30 ms) si calcola il livello RMS in dBFS (`motore.livello_db`); ogni 100 ms parte l'evento `livelli` con il picco di ciascun canale.
+- La finestra mostra una barretta per canale (scala −70…0 dB) con una linea a −45 dB: sopra la linea la barretta è verde. Sale subito e scende di 3 dB ogni aggiornamento, per non sfarfallare.
+- Il livello si misura anche in pausa.
+
+### Pausa
+
+- `Motore.imposta_pausa(True)`: annulla il suggerimento automatico in attesa e svuota le frasi pronte ma non ancora trascritte. Finché dura, i blocchi audio servono solo per i livelli: non arrivano ai segmentatori, il thread di trascrizione scarta quello che trova e `nuova_frase` ignora le frasi finite di trascrivere dopo l'inizio della pausa.
+- Alla ripresa i segmentatori scartano la frase interrotta (`Segmentatore.ricomincia()`, che tiene la stima del rumore).
+- In entrambi i casi nella conversazione si aggiunge una riga «Nota» («ascolto in pausa…», «ascolto ripreso»): Claude vede che manca un pezzo della call.
+- Le richieste su domanda (⌘↩, domanda scritta, 📸) funzionano anche in pausa, con la trascrizione fino a quel momento.
+
+### Scorciatoie globali
+
+- `RegisterEventHotKey` di Carbon, chiamata con ctypes: nessuna dipendenza e **nessun permesso di Accessibilità**, perché il programma non legge la tastiera ma riceve solo le combinazioni registrate. Il gestore viene chiamato sul thread principale, dentro il ciclo di eventi di Qt, quindi può toccare direttamente la finestra.
+- Predefinite ⌃⌘↩ (suggerisci), ⌃⌘S (📸), ⌃⌘P (pausa): non usano ⌘↩ da solo, che in molte app (Slack, chat delle call) serve a inviare. Da macOS 15 una scorciatoia globale deve contenere ⌃ o ⌘: `analizza()` rifiuta le altre.
+- Se una combinazione è già registrata da un'altra app, `RegisterEventHotKey` restituisce un errore e la finestra lo mostra; le altre scorciatoie restano attive.
+
 ### Finestra
 
 - PySide6, `WindowStaysOnTopHint`. Non è una finestra di tipo "Tool", perché su macOS quelle si nascondono quando l'app perde il focus.
 - Tenta di escludersi dalla condivisione schermo con `NSWindow.sharingType = none` (via PyObjC). Non tutte le app di videoconferenza lo rispettano: va verificato.
 - Mostra il suggerimento in corso più gli ultimi 5, il più recente in alto; l'intestazione indica il motivo e il modello ("Domanda rilevata · Haiku", "📸 Schermo · Sonnet").
 - Bottone "📸 Schermo" e ⌘⇧↩: usano la domanda scritta nel campo, se c'è; sotto la barra compare la miniatura dell'ultimo screenshot mandato.
+- Sotto il campo domanda c'è sempre una riga con le scorciatoie (`_mostra_scorciatoie`): quelle globali effettivamente registrate, con l'etichetta calcolata da `config.toml`; se nessuna è attiva (registrazione fallita o sistema diverso da macOS), quelle della finestra (⌘↩, ⌘⇧↩).
+- **Chiusura:** dopo `app.exec()` si chiama `Finestra.chiudi_tutto()` (scorciatoie globali, audio, processi `claude`) e si esce con `os._exit`. Con la chiusura normale di Python, PySide6 distrugge i widget rimasti durante lo spegnimento dell'interprete e a volte va in crash (segmentation fault in `QObject::~QObject`, visto il 16/11/2026 con PySide6 6.12 su macOS 27). Non c'è niente da salvare, quindi l'uscita immediata è sicura.
 
 ## Tempi misurati
 
@@ -165,6 +191,9 @@ Con Sonnet 5.5 e Haiku 5.5 il ragionamento interno non si può disattivare: per 
 | Processo `claude` sempre pronto | Toglie circa 1,4 s di avvio a ogni suggerimento | Una sessione unica per tutta la call: contesto che cresce e risposte influenzate dalle precedenti |
 | Haiku per gli automatici, Sonnet su richiesta | Haiku: 0,8 s al primo testo; Sonnet ragiona meglio quando è l'utente a chiedere | Un solo modello per tutto |
 | Screenshot solo su richiesta, dello schermo principale | Utile quando la domanda riguarda qualcosa sullo schermo; l'utente decide ogni volta cosa esce dal Mac | Screenshot automatico su frasi come «guarda qui» (più costoso, rischio di mandare dati non voluti); selezione di una zona con `screencapture -i` (più precisa ma lenta durante una call) |
+| Scorciatoie globali con `RegisterEventHotKey` (Carbon, ctypes) | Nessun permesso di Accessibilità né dipendenze; API storica ma ancora supportata | pynput (serve il permesso di Accessibilità o Monitoraggio input e su macOS recenti ha problemi con i thread); `QShortcut` (funziona solo con la finestra in primo piano) |
+| Pausa che scarta l'audio prima della segmentazione | Niente di quello che si dice in pausa viene trascritto, nemmeno in memoria | Chiudere gli stream audio (più lento a riprendere, e i livelli sparirebbero) |
+| Uscita con `os._exit` dopo una chiusura ordinata | Evita il crash di PySide6 durante lo spegnimento di Python (riprodotto: 30 chiusure su 30 in crash in un test, 0 su 30 dopo) | Dare un genitore a ogni widget e layout per sistemare la proprietà degli oggetti: più modifiche e nessuna garanzia con le versioni future di PySide6 |
 | `screencapture` + `sips` | Strumenti di sistema: nessuna dipendenza nuova | ScreenCaptureKit via PyObjC (più codice), Pillow per il ridimensionamento |
 | Tempi di attesa 550 ms / 0,6 s / 2,5 s | Reattività; prima erano 700 ms / 1,5 s / 4 s | Se le domande vengono spezzate, alzare `attesa_s` a 1,0 |
 
@@ -172,18 +201,19 @@ Con Sonnet 5.5 e Haiku 5.5 il ragionamento interno non si può disattivare: per 
 
 - La condivisione dell'intero schermo potrebbe mostrare la finestra: verificare con la propria app di call.
 - Con gli altoparlanti invece delle cuffie, il microfono sente anche gli altri e la trascrizione si duplica.
+- Con un volume di ingresso basso la tua voce può restare sotto `soglia_min_db` e non essere trascritta. Le app di call con regolazione automatica del microfono (Zoom in particolare) cambiano il volume di ingresso di macOS durante la call. Non c'è ancora un'amplificazione software prima di Whisper: possibile sviluppo se il problema si presenta.
 - Il dispositivo a uscita multipla disattiva i tasti del volume del Mac finché è selezionato come uscita di sistema.
 - Le espressioni regolari possono perdere domande formulate in modo insolito (rimedio: ⌘↩) o scattare su frasi retoriche (mitigato dalla pausa minima e dalla risposta «—»).
 - Whisper può storpiare i nomi di librerie poco comuni: aggiungerli a `vocabolario`.
 - Ogni suggerimento consuma un po' dei limiti di utilizzo del piano Claude; quelli con screenshot un po' di più.
 - Lo screenshot include tutto lo schermo principale (notifiche, chat, dati dei clienti): l'utente deve tenerne conto prima di premere 📸.
+- Le scorciatoie globali (Carbon) non sono coperte dai test automatici: vanno provate sul Mac.
 - Il supporto delle immagini in `claude -p --input-format stream-json` è verificato sulla versione installata il 16/11/2026; dopo un aggiornamento di Claude Code conviene ripetere `--prova-schermo`.
 
 ## Possibili sviluppi
 
 - Helper Swift con ScreenCaptureKit o i process tap per catturare l'audio della call senza BlackHole.
 - Silero VAD al posto del rilevatore a energia, per ambienti rumorosi.
-- Scorciatoia globale (fuori dalla finestra) per "Suggerisci ora" e per 📸.
 - Cattura di una sola finestra (l'app condivisa nella call) o di una zona selezionata.
 - Riassunto della call a fine riunione, con le decisioni prese e le cose da fare (opzionale, con consenso).
 - Profili di contesto diversi per cliente o progetto (`contesto-<cliente>.md`).
@@ -195,7 +225,7 @@ Con Sonnet 5.5 e Haiku 5.5 il ragionamento interno non si può disattivare: per 
 ```
 
 I test non usano né audio vero né Claude vero:
-- `test_logica.py`: segmentazione su audio sintetico, ricampionamento, filtro delle allucinazioni, trigger, scelta dei modelli, motore con un client API finto (attesa, pausa minima, contenuto dei messaggi), messaggio e motore con screenshot;
+- `test_logica.py`: segmentazione su audio sintetico, ricampionamento, filtro delle allucinazioni, trigger, scelta dei modelli, motore con un client API finto (attesa, pausa minima, contenuto dei messaggi), messaggio e motore con screenshot, analisi delle scorciatoie, pausa (frasi scartate, livelli misurati, note nella conversazione);
 - `test_claude_code.py`: `AssistenteClaudeCode` con `tests/claude_finto.py` (streaming, opzione sconosciuta, errore di accesso, annullamento, processo pronto riusato, due modelli, screenshot nel messaggio stream-json).
 
 Per una prova end-to-end: `./avvia.sh --prova-claude` e `./avvia.sh --prova-schermo`, poi `./avvia.sh` con un video YouTube in riproduzione.

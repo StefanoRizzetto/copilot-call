@@ -9,6 +9,7 @@ import numpy as np
 from copilota.assistente import Assistente, contenuto, costruisci_messaggio
 from copilota.config import carica
 from copilota.motore import Eventi, Motore, modelli
+from copilota.scorciatoie import analizza
 from copilota.schermo import Immagine, dimensioni_png, prepara
 from copilota.segmentatore import Segmentatore
 from copilota.trascrittore import _segmento_valido, ricampiona
@@ -127,6 +128,9 @@ class _Registro(Eventi):
     def schermo(self, d):
         self.log.append(("schermo", len(d)))
 
+    def livelli(self, v):
+        self.log.append(("livelli", dict(v)))
+
 
 def test_motore_con_api_finta():
     cfg = carica(RADICE / "config.toml")
@@ -189,3 +193,51 @@ def test_motore_con_screenshot():
     assert any(e[0] == "schermo" for e in ev.log)
     assert any(e[0] == "inizio" and e[1].startswith("📸 Domanda") for e in ev.log), ev.log
     assert m._pendente is None  # la richiesta con lo schermo annulla l'automatico in attesa
+
+
+def test_scorciatoie_analizza():
+    assert analizza("ctrl+cmd+return") == (0x24, 0x1100, "⌃⌘↩")
+    assert analizza("cmd + shift + S") == (0x01, 0x0300, "⇧⌘S")
+    assert analizza("ctrl+alt+cmd+space")[2] == "⌃⌥⌘Spazio"
+    cfg = carica(RADICE / "config.toml")
+    etichette = [analizza(t)[2] for t in cfg["scorciatoie"].values() if t]
+    assert etichette == ["⌃⌘↩", "⌃⌘S", "⌃⌘P"], etichette
+    for sbagliata in ["alt+s", "shift+return", "ctrl+cmd+ù", "super+s", ""]:
+        try:
+            analizza(sbagliata)
+        except ValueError:
+            continue
+        raise AssertionError(f"doveva essere rifiutata: {sbagliata!r}")
+
+
+def test_pausa():
+    cfg = carica(RADICE / "config.toml")
+    cfg["suggerimenti"]["attesa_s"] = 0.2
+    client = _ClientFinto()
+    ev = _Registro()
+    m = Motore(cfg, ev, assistente=Assistente("claude-sonnet-5-5", 700, client=client), trascrittore=object())
+    m.segmentatori = {"Io": Segmentatore(SR)}
+    m.sr = {"Io": SR}
+    threading.Thread(target=m._ciclo_segmenti, daemon=True).start()
+
+    def parla():
+        segnale = np.concatenate([_rumore(0.5), _voce(1.5), _rumore(1.2)])
+        for i in range(0, len(segnale), 1440):
+            m.coda_audio.put(("Io", segnale[i:i + 1440]))
+        time.sleep(0.6)
+
+    m.nuova_frase("Interlocutore", "Che pattern ci conviene usare per la cache?")
+    assert m._pendente is not None
+    m.imposta_pausa(True)
+    assert m._pendente is None  # l'automatico in attesa viene annullato
+    m.nuova_frase("Interlocutore", "Questa frase arriva durante la pausa")
+    parla()
+    assert m.coda_frasi.empty()  # in pausa l'audio non diventa frasi
+    picchi = [e[1]["Io"] for e in ev.log if e[0] == "livelli"]
+    assert picchi and max(picchi) > -30, picchi  # ma i livelli si misurano lo stesso
+    m.imposta_pausa(False)
+    parla()
+    assert m.coda_frasi.qsize() == 1
+    m.ferma()
+    testo = m.conversazione.recente(5)
+    assert "durante la pausa" not in testo and "ascolto in pausa" in testo and "ascolto ripreso" in testo

@@ -74,6 +74,7 @@ Dalla cartella del progetto:
 ```
 
 - macOS chiederà il permesso del **microfono** per il Terminale: concedilo. Se non compare, vai in Impostazioni di Sistema → Privacy e sicurezza → Microfono.
+- In `--prova-audio`, mentre parli normalmente, la barra "Io" deve arrivare a picchi tra **−35 e −15 dB**. Se resta sotto **−45 dB** la tua voce è troppo bassa: il programma ignora tutto quello che sta sotto `soglia_min_db` (−50 dB). Vedi [Volume del microfono](#volume-del-microfono).
 - La prima trascrizione scarica il modello Whisper (circa 1,6 GB); da lì in poi funziona offline.
 - `--prova-claude --modello claude-haiku-5-5` misura un modello diverso da quello predefinito.
 - Per gli screenshot serve il permesso di **Registrazione schermo**: al primo `--prova-schermo` macOS lo chiede per il Terminale. Se non compare, vai in Impostazioni di Sistema → Privacy e sicurezza → Registrazione schermo e audio di sistema, abilita il Terminale e riaprilo. Senza permesso lo screenshot contiene solo lo sfondo: `--prova-schermo` ti dice dove aprire l'immagine per controllare.
@@ -86,9 +87,34 @@ Dalla cartella del progetto:
 
 - I suggerimenti partono da soli quando qualcuno fa una domanda tecnica (con Haiku).
 - **⌘↩** o **Suggerisci ora**: un suggerimento sul punto in discussione in quel momento (con Sonnet).
+- Sotto i bottoni ci sono i **livelli audio** di "Io" e "Interlocutore". Quando qualcuno parla, la barretta deve superare la linea verticale (−45 dB) e diventare verde; se la tua resta grigia mentre parli, il microfono è troppo basso (vedi [Volume del microfono](#volume-del-microfono)).
+- **⏸ Pausa**: smette di trascrivere finché non premi **▶ Riprendi**. In pausa niente arriva a Claude e non partono suggerimenti; i livelli continuano a muoversi. Nella trascrizione resta una nota, così Claude sa che manca un pezzo della call.
 - Nel campo in basso puoi scrivere una domanda («qual era la libreria che ha nominato?»): Claude risponde tenendo conto della call.
 - **📸 Schermo** o **⌘⇧↩**: cattura lo schermo principale (quello con la barra dei menu) e lo manda a Claude (con Sonnet) insieme alla trascrizione. Se nel campo in basso hai scritto una domanda («perché fallisce questa query?»), parte insieme allo screenshot; altrimenti Claude ti dice cosa c'è di rilevante sullo schermo rispetto alla discussione. La finestra del copilota sparisce per un attimo, così non compare nell'immagine; in alto vedi la miniatura di cosa è stato mandato.
 - Ogni suggerimento indica il motivo e il modello, per esempio "Domanda rilevata · Haiku".
+
+**Scorciatoie da qualsiasi app** (anche quando in primo piano c'è la call o l'editor):
+
+| Scorciatoia | Azione |
+|---|---|
+| ⌃⌘↩ | Suggerisci ora |
+| ⌃⌘S | 📸 Schermo (con la domanda scritta nel campo, se c'è) |
+| ⌃⌘P | Pausa / riprendi l'ascolto |
+
+Le trovi sempre scritte in fondo alla finestra, sotto il campo della domanda. Non serve nessun permesso. Si cambiano nella sezione `[scorciatoie]` di `config.toml` (la riga in fondo si aggiorna da sola); se una combinazione è già usata da un'altra app, la finestra lo segnala in rosso. Dentro la finestra restano anche ⌘↩ e ⌘⇧↩.
+
+## Volume del microfono
+
+Il copilota legge il microfono direttamente da macOS, quindi conta il volume di ingresso di sistema, non quello dell'app della call. Se la tua voce arriva bassa:
+
+1. **Volume di ingresso:** Impostazioni di Sistema → Suono → Ingresso. Mentre parli guarda il «Livello di ingresso» e porta il cursore del volume verso destra.
+2. **Dispositivo giusto:** nella stessa schermata controlla quale ingresso è selezionato. Il microfono delle cuffie Bluetooth spesso è scarso; quello del Mac funziona bene se sei vicino.
+3. **Regolazione automatica delle app di call:** Zoom (e in parte Meet e Teams) possono cambiare da sole il volume del microfono di macOS durante la call. In Zoom disattiva Impostazioni → Audio → «Regola automaticamente il volume del microfono».
+4. **Verifica:** `./avvia.sh --prova-audio` (picchi della barra "Io" tra −35 e −15 dB), poi `./avvia.sh --solo-trascrizione` per controllare che le tue frasi vengano trascritte per intero.
+
+Se la voce resta bassa anche con il volume al massimo, abbassa `soglia_min_db` a −60 in `[vad]`.
+
+> Per le prove non usare Memo Vocali: registra solo il microfono, mai l'audio che esce dal Mac. Il copilota invece riceve l'audio della call (o del video) da BlackHole, sul canale "Interlocutore"; con le cuffie è giusto che il microfono non lo senta.
 
 ## Provarlo con un video YouTube
 
@@ -115,8 +141,10 @@ Scegli un video in cui qualcuno fa domande tecniche ad alta voce (un podcast tra
 | `solo_interlocutore` | `false` | `true`: gli automatici partono solo dalle domande degli altri |
 | `automatici` | `true` | `false`: solo suggerimenti su richiesta. Si può cambiare anche dalla finestra |
 | `margine_db` | 12 | Abbassalo se la trascrizione perde parole, alzalo se trascrive rumore |
+| `soglia_min_db` | −50 | Sotto questo livello l'audio è considerato silenzio. Portalo a −60 se la tua voce è molto bassa |
 | `microfono` / `sistema` | predefinito / `BlackHole` | Parte del nome dei dispositivi audio; `sistema = ""` usa solo il microfono |
 | `numero` (in `[schermo]`) | 1 | Schermo catturato da 📸: 1 è il principale, 2, 3… gli altri. Il principale si sceglie in Impostazioni di Sistema → Monitor |
+| `suggerisci` / `schermo` / `pausa` (in `[scorciatoie]`) | ⌃⌘↩ / ⌃⌘S / ⌃⌘P | Scorciatoie da qualsiasi app, scritte come `"ctrl+cmd+return"`. Serve ctrl o cmd; `""` le disattiva |
 | `lato_max` / `qualita` | 1568 / 80 | Dimensione massima (pixel) e qualità JPEG dello screenshot mandato a Claude |
 
 ## Condivisione schermo
@@ -135,6 +163,9 @@ Prima di premere 📸, ricorda che a Claude arriva tutto quello che c'è sullo s
 |---|---|
 | "Nessun dispositivo di ingresso contiene 'BlackHole'" | BlackHole non è installato oppure serve un riavvio; per provare senza, metti `sistema = ""` |
 | La barra "Interlocutore" non si muove in `--prova-audio` | L'app della call (o il Mac) non sta usando l'uscita "Cuffie + Copilota" |
+| La barra "Io" resta sotto −45 dB o le tue frasi non vengono trascritte | Volume di ingresso basso o microfono sbagliato: vedi [Volume del microfono](#volume-del-microfono) |
+| Il livello della tua voce cambia durante la call | L'app della call regola da sola il volume del microfono (in Zoom si disattiva nelle impostazioni Audio) |
+| Memo Vocali non registra l'audio del video | È normale: registra solo il microfono. Per verificare l'audio della call usa `--prova-audio` |
 | Le tue frasi compaiono due volte | Stai usando gli altoparlanti invece delle cuffie |
 | Testo strano tipo "Sottotitoli creati da…" | Allucinazioni di Whisper sul rumore: alza `margine_db` |
 | "Non trovo Claude Code" | Installalo, oppure scrivi il percorso in `percorso_claude` (lo trovi con `which claude`) |
@@ -143,6 +174,7 @@ Prima di premere 📸, ricorda che a Claude arriva tutto quello che c'è sullo s
 | I suggerimenti partono su mezza domanda | Alza `attesa_s` (es. 1,0) |
 | "Non riesco a catturare lo schermo" o Claude vede solo lo sfondo | Manca il permesso di Registrazione schermo per il Terminale (vedi Verifiche) |
 | Errore da Claude solo con 📸 | La versione di Claude Code potrebbe non accettare immagini: `claude update`, poi `./avvia.sh --prova-schermo` |
+| "Scorciatoie globali non attive: … già usata da un'altra app" | Scegli un'altra combinazione in `[scorciatoie]` di `config.toml` |
 | 📸 cattura il monitor sbagliato | Cambia `numero` in `[schermo]`, o scegli il monitor principale in Impostazioni di Sistema → Monitor |
 
 ## Per sviluppatori
