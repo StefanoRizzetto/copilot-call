@@ -1,0 +1,48 @@
+# Configurazione di Copilota call. Ogni valore assente usa il predefinito.
+
+[audio]
+# Parte del nome del microfono ("" = microfono predefinito di macOS).
+microfono = ""
+# Dispositivo da cui arriva la voce degli altri. "" = solo microfono.
+sistema = "BlackHole"
+etichetta_microfono = "Io"
+etichetta_sistema = "Interlocutore"
+
+[vad]
+# Quanto silenzio chiude una frase. Più basso = più reattivo, ma frasi più spezzate.
+silenzio_fine_ms = 550
+# Se la trascrizione perde parole, abbassa margine_db (es. 8); se trascrive rumore, alzalo.
+margine_db = 12.0
+soglia_min_db = -50.0
+durata_max_s = 12.0
+
+[trascrizione]
+motore = "auto"                                     # auto | mlx | faster-whisper
+modello_mlx = "mlx-community/whisper-large-v3-turbo"
+modello_faster = "small"
+lingua = "it"
+# Parole che Whisper deve riconoscere bene: aggiungi le tecnologie e i nomi dei tuoi progetti.
+vocabolario = "Discussione tecnica tra programmatori: API, endpoint, backend, frontend, refactoring, design pattern, repository, pull request, deploy, database, cache, microservizi, Docker, Kubernetes, TypeScript, Python, React."
+
+[claude]
+# "claude-code": usa il tuo abbonamento Claude tramite Claude Code (nessuna chiave API).
+# "api": usa una chiave API (variabile ANTHROPIC_API_KEY).
+motore = "claude-code"
+# Percorso di 'claude' se non viene trovato da solo (es. "/Users/tuonome/.local/bin/claude").
+percorso_claude = ""
+# Livello di ragionamento per Claude Code: low è il più veloce. "" = predefinito.
+sforzo = "low"
+# Suggerimenti automatici: Haiku risponde in meno di un secondo.
+modello_automatici = "claude-haiku-5-5"
+# Quando chiedi tu (⌘↩ o domanda scritta): Sonnet ragiona meglio, ~2 secondi in più.
+modello_su_richiesta = "claude-sonnet-5-5"
+max_token = 700                 # usato solo con motore = "api"
+minuti_contesto = 8
+file_contesto = "contesto.md"
+
+[suggerimenti]
+automatici = true
+attesa_s = 0.6
+attesa_max_s = 2.5
+pausa_minima_s = 10.0
+solo_interlocutore = false

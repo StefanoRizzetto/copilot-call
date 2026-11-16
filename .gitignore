@@ -1,0 +1,47 @@
+# Ambienti virtuali
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Segreti e configurazione locale
+.env
+.env.*
+config.local.toml
+
+# Modelli scaricati e registrazioni audio
+*.gguf
+*.safetensors
+*.bin
+*.wav
+*.mp3
+*.m4a
+registrazioni/
+
+# Log
+*.log
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# macOS
+.DS_Store
+.AppleDouble
+.Spotlight-V100
+.Trashes
+
+# Claude Code (impostazioni locali)
+.claude/settings.local.json
