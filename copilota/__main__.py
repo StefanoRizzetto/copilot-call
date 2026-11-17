@@ -161,6 +161,20 @@ def prova_schermo(cfg, modello=None):
     print(f"\n\n· primo testo dopo {primo[0] if primo else 0:.1f}s, completo dopo {totale:.1f}s (avvio a freddo)")
 
 
+def _libera_semafori():
+    """Libera i semafori di multiprocessing (li crea tqdm, per esempio quando si carica Whisper).
+
+    os._exit salta la pulizia normale di Python: senza questo passaggio il resource_tracker
+    stampa "There appear to be 1 leaked semaphore objects" alla chiusura.
+    """
+    try:
+        from multiprocessing import util
+
+        util._run_finalizers(0)
+    except Exception:  # noqa: BLE001 — in chiusura non deve mai bloccare l'uscita
+        pass
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="copilota", description="Suggerimenti di Claude in tempo reale durante le call.")
     p.add_argument("--config", default=str(CARTELLA / "config.toml"))
@@ -221,6 +235,7 @@ def main(argv=None):
     # distrugge i widget rimasti durante lo spegnimento dell'interprete e a volte va in crash
     # (segmentation fault in QObject::~QObject). Non c'è niente da salvare, quindi os._exit è sicuro.
     finestra.chiudi_tutto()
+    _libera_semafori()
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(codice)
